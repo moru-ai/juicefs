@@ -33,6 +33,15 @@ type Progress struct {
 	bars  []*mpb.Bar
 }
 
+// Write implements io.Writer to allow Progress to be used as a log output.
+// When progress bars are active, log output is written to stderr to avoid interference.
+func (p *Progress) Write(b []byte) (int, error) {
+	if p.Quiet {
+		return len(b), nil
+	}
+	return os.Stderr.Write(b)
+}
+
 type Bar struct {
 	total int64
 	*mpb.Bar
@@ -46,6 +55,11 @@ func (b *Bar) IncrTotal(n int64) {
 func (b *Bar) SetTotal(total int64) {
 	atomic.StoreInt64(&b.total, total)
 	b.Bar.SetTotal(total, false)
+}
+
+// Total returns the current total value for the bar.
+func (b *Bar) Total() int64 {
+	return atomic.LoadInt64(&b.total)
 }
 
 func (b *Bar) GetTotal() int64 {
