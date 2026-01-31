@@ -36,6 +36,7 @@ import (
 	"github.com/pkg/errors"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/iterator"
+	"google.golang.org/api/option"
 )
 
 type gs struct {
@@ -217,9 +218,23 @@ func newGS(endpoint, accessKey, secretKey, token string) (ObjectStorage, error) 
 	if size < 1 {
 		size = 5
 	}
+
+	// Build client options for custom endpoint and anonymous mode
+	var opts []option.ClientOption
+
+	// Support custom endpoint (for proxy)
+	if ep := os.Getenv("JFS_GCS_ENDPOINT"); ep != "" {
+		opts = append(opts, option.WithEndpoint(ep))
+	}
+
+	// Support anonymous mode (no credentials)
+	if accessKey == "anonymous" {
+		opts = append(opts, option.WithoutAuthentication())
+	}
+
 	clis := make([]*storage.Client, size)
 	for i := 0; i < size; i++ {
-		client, err := storage.NewClient(ctx)
+		client, err := storage.NewClient(ctx, opts...)
 		if err != nil {
 			return nil, err
 		}
