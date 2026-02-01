@@ -232,11 +232,18 @@ func newRedisMeta(driver, addr string, conf *Config) (Meta, error) {
 	} else {
 		if !strings.Contains(hosts, ",") {
 			c := redis.NewClient(opt)
-			info, err := c.ClusterInfo(Background()).Result()
-			if err != nil && strings.Contains(err.Error(), "cluster mode") || err == nil && strings.Contains(info, "cluster_state:") {
-				logger.Infof("redis %s is in cluster mode", hosts)
-			} else {
+			// JFS_REDIS_NO_CLUSTER: Force using regular client even when cluster is detected.
+			// Useful when connecting through a proxy that handles cluster communication.
+			if os.Getenv("JFS_REDIS_NO_CLUSTER") != "" {
+				logger.Infof("redis %s cluster mode disabled via JFS_REDIS_NO_CLUSTER", hosts)
 				rdb = c
+			} else {
+				info, err := c.ClusterInfo(Background()).Result()
+				if err != nil && strings.Contains(err.Error(), "cluster mode") || err == nil && strings.Contains(info, "cluster_state:") {
+					logger.Infof("redis %s is in cluster mode", hosts)
+				} else {
+					rdb = c
+				}
 			}
 		}
 		if rdb == nil {
