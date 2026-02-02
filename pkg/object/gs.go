@@ -34,10 +34,30 @@ import (
 	"cloud.google.com/go/compute/metadata"
 	"cloud.google.com/go/storage"
 	"github.com/pkg/errors"
+	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/google"
 	"google.golang.org/api/iterator"
 	"google.golang.org/api/option"
 )
+
+// fileTokenSource reads an OAuth2 access token from a file.
+// The file can contain either a raw token string or JSON with "access_token" field.
+// Re-reads the file on each Token() call to support token refresh.
+type fileTokenSource struct {
+	path string
+}
+
+func (f *fileTokenSource) Token() (*oauth2.Token, error) {
+	data, err := os.ReadFile(f.path)
+	if err != nil {
+		return nil, errors.Wrapf(err, "read token file %s", f.path)
+	}
+	token := strings.TrimSpace(string(data))
+	if token == "" {
+		return nil, errors.Errorf("token file %s is empty", f.path)
+	}
+	return &oauth2.Token{AccessToken: token}, nil
+}
 
 type gs struct {
 	DefaultObjectStorage
@@ -219,7 +239,7 @@ func newGS(endpoint, accessKey, secretKey, token string) (ObjectStorage, error) 
 		size = 5
 	}
 
-	// Build client options for custom endpoint and anonymous mode
+	// Build client options for custom endpoint and authentication
 	var opts []option.ClientOption
 
 	// Support custom endpoint (for proxy)
@@ -227,8 +247,12 @@ func newGS(endpoint, accessKey, secretKey, token string) (ObjectStorage, error) 
 		opts = append(opts, option.WithEndpoint(ep))
 	}
 
-	// Support anonymous mode (no credentials)
-	if accessKey == "anonymous" {
+	// Support token file for downscoped credentials
+	// Token is re-read on each request to support refresh
+	if tokenFile := os.Getenv("JFS_GCS_TOKEN_FILE"); tokenFile != "" {
+		opts = append(opts, option.WithTokenSource(&fileTokenSource{path: tokenFile}))
+	} else if accessKey == "anonymous" {
+		// Support anonymous mode (no credentials)
 		opts = append(opts, option.WithoutAuthentication())
 	}
 
