@@ -64,12 +64,24 @@ type gs struct {
 	clients []*storage.Client
 	index   uint64
 	bucket  string
+	prefix  string // Path prefix for all object keys (e.g., "vol-xxx/")
 	region  string
 	sc      string
 }
 
 func (g *gs) String() string {
+	if g.prefix != "" {
+		return fmt.Sprintf("gs://%s/%s", g.bucket, g.prefix)
+	}
 	return fmt.Sprintf("gs://%s/", g.bucket)
+}
+
+// key prepends the prefix to an object key.
+func (g *gs) key(k string) string {
+	if g.prefix == "" {
+		return k
+	}
+	return g.prefix + k
 }
 
 func (g *gs) getClient() *storage.Client {
@@ -118,7 +130,7 @@ func (g *gs) Create(ctx context.Context) error {
 }
 
 func (g *gs) Head(ctx context.Context, key string) (Object, error) {
-	attrs, err := g.getClient().Bucket(g.bucket).Object(key).Attrs(ctx)
+	attrs, err := g.getClient().Bucket(g.bucket).Object(g.key(key)).Attrs(ctx)
 	if err != nil {
 		if err == storage.ErrObjectNotExist {
 			err = os.ErrNotExist
@@ -136,7 +148,7 @@ func (g *gs) Head(ctx context.Context, key string) (Object, error) {
 }
 
 func (g *gs) Get(ctx context.Context, key string, off, limit int64, getters ...AttrGetter) (io.ReadCloser, error) {
-	reader, err := g.getClient().Bucket(g.bucket).Object(key).NewRangeReader(ctx, off, limit)
+	reader, err := g.getClient().Bucket(g.bucket).Object(g.key(key)).NewRangeReader(ctx, off, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -147,7 +159,7 @@ func (g *gs) Get(ctx context.Context, key string, off, limit int64, getters ...A
 }
 
 func (g *gs) Put(ctx context.Context, key string, data io.Reader, getters ...AttrGetter) error {
-	writer := g.getClient().Bucket(g.bucket).Object(key).NewWriter(ctx)
+	writer := g.getClient().Bucket(g.bucket).Object(g.key(key)).NewWriter(ctx)
 	writer.StorageClass = g.sc
 
 	// If you upload small objects (< 16MiB), you should set ChunkSize
@@ -168,8 +180,8 @@ func (g *gs) Put(ctx context.Context, key string, data io.Reader, getters ...Att
 
 func (g *gs) Copy(ctx context.Context, dst, src string) error {
 	client := g.getClient()
-	srcObj := client.Bucket(g.bucket).Object(src)
-	dstObj := client.Bucket(g.bucket).Object(dst)
+	srcObj := client.Bucket(g.bucket).Object(g.key(src))
+	dstObj := client.Bucket(g.bucket).Object(g.key(dst))
 	copier := dstObj.CopierFrom(srcObj)
 	if g.sc != "" {
 		copier.StorageClass = g.sc
@@ -179,14 +191,14 @@ func (g *gs) Copy(ctx context.Context, dst, src string) error {
 }
 
 func (g *gs) Delete(ctx context.Context, key string, getters ...AttrGetter) error {
-	if err := g.getClient().Bucket(g.bucket).Object(key).Delete(ctx); err != storage.ErrObjectNotExist {
+	if err := g.getClient().Bucket(g.bucket).Object(g.key(key)).Delete(ctx); err != storage.ErrObjectNotExist {
 		return err
 	}
 	return nil
 }
 
 func (g *gs) List(ctx context.Context, prefix, start, token, delimiter string, limit int64, followLink bool) ([]Object, bool, string, error) {
-	objectIterator := g.getClient().Bucket(g.bucket).Objects(ctx, &storage.Query{Prefix: prefix, Delimiter: delimiter, StartOffset: start})
+	objectIterator := g.getClient().Bucket(g.bucket).Objects(ctx, &storage.Query{Prefix: g.key(prefix), Delimiter: delimiter, StartOffset: g.key(start)})
 	pager := iterator.NewPager(objectIterator, int(limit), token)
 	var entries []*storage.ObjectAttrs
 	nextPageToken, err := pager.NextPage(&entries)
@@ -198,9 +210,13 @@ func (g *gs) List(ctx context.Context, prefix, start, token, delimiter string, l
 	for i := 0; i < n; i++ {
 		item := entries[i]
 		if delimiter != "" && item.Prefix != "" {
-			objs[i] = &obj{item.Prefix, 0, time.Unix(0, 0), true, item.StorageClass}
+			// Strip the prefix from the returned key
+			key := strings.TrimPrefix(item.Prefix, g.prefix)
+			objs[i] = &obj{key, 0, time.Unix(0, 0), true, item.StorageClass}
 		} else {
-			objs[i] = &obj{item.Name, item.Size, item.Updated, strings.HasSuffix(item.Name, "/"), item.StorageClass}
+			// Strip the prefix from the returned key
+			key := strings.TrimPrefix(item.Name, g.prefix)
+			objs[i] = &obj{key, item.Size, item.Updated, strings.HasSuffix(key, "/"), item.StorageClass}
 		}
 	}
 	if delimiter != "" {
@@ -227,6 +243,15 @@ func newGS(endpoint, accessKey, secretKey, token string) (ObjectStorage, error) 
 	var region string
 	if len(hostParts) > 1 {
 		region = hostParts[1]
+	}
+
+	// Extract path prefix (e.g., "vol-xxx/" from "gs://bucket/vol-xxx")
+	var prefix string
+	if uri.Path != "" && uri.Path != "/" {
+		prefix = strings.TrimPrefix(uri.Path, "/")
+		if !strings.HasSuffix(prefix, "/") {
+			prefix += "/"
+		}
 	}
 
 	var size int
@@ -265,7 +290,7 @@ func newGS(endpoint, accessKey, secretKey, token string) (ObjectStorage, error) 
 		clis[i] = client
 	}
 
-	return &gs{clients: clis, bucket: bucket, region: region}, nil
+	return &gs{clients: clis, bucket: bucket, prefix: prefix, region: region}, nil
 }
 
 func init() {
